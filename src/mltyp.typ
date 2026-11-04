@@ -178,6 +178,100 @@
 )
 
 // ----------------------------------------------------------------------------
+// Quantile / min-max helpers used by the scalers
+// ----------------------------------------------------------------------------
+
+// Linear-interpolated quantile (q in [0,1]) of an array `a`.
+#let quantile(a, q) = {
+  let s = a.sorted()
+  let n = s.len()
+  let p = q * (n - 1)
+  let lo = calc.floor(p)
+  let hi = calc.ceil(p)
+  if lo == hi {
+    s.at(lo)
+  } else {
+    s.at(lo) + (p - lo) * (s.at(hi) - s.at(lo))
+  }
+}
+
+#let col-extremes(x, pick) = {
+  range(x.at(0).len()).map(j =>
+    x.map(row => row.at(j)).fold(x.at(0).at(j), pick)
+  )
+}
+
+// ----------------------------------------------------------------------------
+// MinMaxScaler
+// ----------------------------------------------------------------------------
+
+#let min-max-scaler(feature-range: (0.0, 1.0)) = (
+  feature-range: feature-range,
+  mins: (),
+  maxs: (),
+  fit: (self, x) =>
+    dict-update(
+      self,
+      mins: col-extremes(x, calc.min),
+      maxs: col-extremes(x, calc.max),
+    ),
+  transform: (self, x) => {
+    let lo = self.feature-range.at(0)
+    let hi = self.feature-range.at(1)
+    x.map(row =>
+      row.zip(self.mins, self.maxs).map(t =>
+        (t.at(0) - t.at(1)) / (t.at(2) - t.at(1)) * (hi - lo) + lo
+      )
+    )
+  },
+  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
+  inverse-transform: (self, x) => {
+    let lo = self.feature-range.at(0)
+    let hi = self.feature-range.at(1)
+    x.map(row =>
+      row.zip(self.mins, self.maxs).map(t =>
+        (t.at(0) - lo) / (hi - lo) * (t.at(2) - t.at(1)) + t.at(1)
+      )
+    )
+  },
+)
+
+// ----------------------------------------------------------------------------
+// RobustScaler
+// ----------------------------------------------------------------------------
+
+#let robust-scaler(quantile-range: (0.25, 0.75)) = (
+  quantile-range: quantile-range,
+  medians: (),
+  lower: (),
+  upper: (),
+  fit: (self, x) => {
+    let n = x.at(0).len()
+    let qlo = self.quantile-range.at(0)
+    let qhi = self.quantile-range.at(1)
+    dict-update(
+      self,
+      medians: range(n).map(j => quantile(x.map(row => row.at(j)), 0.5)),
+      lower: range(n).map(j => quantile(x.map(row => row.at(j)), qlo)),
+      upper: range(n).map(j => quantile(x.map(row => row.at(j)), qhi)),
+    )
+  },
+  transform: (self, x) =>
+    x.map(row =>
+      row.zip(self.medians, self.lower, self.upper).map(t =>
+        (t.at(0) - t.at(1)) / (t.at(3) - t.at(2))
+      )
+    ),
+  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
+  inverse-transform: (self, x) =>
+    x.map(row =>
+      row.zip(self.medians, self.lower, self.upper).map(t =>
+        t.at(0) * (t.at(3) - t.at(2)) + t.at(1)
+      )
+    ),
+)
+
+// ----------------------------------------------------------------------------
 // PolynomialFeatures
 // ----------------------------------------------------------------------------
 
@@ -413,4 +507,64 @@
       (self.fitted-estimator.score)(self.fitted-estimator, xt, y)
     },
   )
+}
+
+// ----------------------------------------------------------------------------
+// Model selection: deterministic shuffling, train/test split, KFold
+// ----------------------------------------------------------------------------
+
+// Deterministic Fisher-Yates shuffle of the integers 0..n-1 using a seeded
+// linear congruential generator (so results are reproducible).
+#let shuffle-indices(n, seed) = {
+  let idx = range(n)
+  let s = seed
+  for i in range(n - 1) {
+    let k = n - 1 - i
+    s = calc.rem(1664525 * s + 1013904223, 4294967296)
+    let j = calc.rem(s, k + 1)
+    let tmp = idx.at(k)
+    idx = arr-set(idx, k, idx.at(j))
+    idx = arr-set(idx, j, tmp)
+  }
+  idx
+}
+
+#let shuffle(a, seed) = {
+  let perm = shuffle-indices(a.len(), seed)
+  perm.map(i => a.at(i))
+}
+
+// Split X and y into train and test portions.
+// Returns a dict: (train-x, train-y, test-x, test-y).
+#let train-test-split(X, y, test-size: 0.25, shuffle: true, random-state: 0) = {
+  let n = X.len()
+  let idx = if shuffle { shuffle-indices(n, random-state) } else { range(n) }
+  let ntest = calc.floor(n * test-size)
+  let ntrain = n - ntest
+  let train-idx = idx.slice(0, ntrain)
+  let test-idx = idx.slice(ntrain, n)
+  (
+    train-x: train-idx.map(i => X.at(i)),
+    train-y: train-idx.map(i => y.at(i)),
+    test-x: test-idx.map(i => X.at(i)),
+    test-y: test-idx.map(i => y.at(i)),
+  )
+}
+
+// Split n samples into `splits` roughly equal folds (round-robin assignment).
+// Returns an array of `splits` dicts, each with (train-idx, test-idx).
+#let k-fold(n, splits: 5, shuffle: false, random-state: 0) = {
+  let idx = if shuffle { shuffle-indices(n, random-state) } else { range(n) }
+  range(splits).map(f => {
+    let test-idx = ()
+    let train-idx = ()
+    for i in range(n) {
+      if calc.rem(i, splits) == f {
+        test-idx += (idx.at(i),)
+      } else {
+        train-idx += (idx.at(i),)
+      }
+    }
+    (train-idx: train-idx, test-idx: test-idx)
+  })
 }

@@ -1,4 +1,4 @@
-#import "mltyp.typ": standard-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, r_squared, accuracy-score, mean-squared-error
+#import "mltyp.typ": standard-scaler, min-max-scaler, robust-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, train-test-split, k-fold, r_squared, accuracy-score, mean-squared-error
 
 = mltyp — demo
 
@@ -48,3 +48,26 @@
 #let sX = (sc.transform)(sc, X)
 #show-head("scaled", sX)
 #show-head("inverse", (sc.inverse-transform)(sc, sX))
+
+== MinMax scaler
+#let mm0 = min-max-scaler()
+#let mm = (mm0.fit)(mm0, X)
+#show-head("mm scaled", (mm.transform)(mm, X))
+#show-head("mm inverse", (mm.inverse-transform)(mm, (mm.transform)(mm, X)))
+
+== Robust scaler
+#let rb0 = robust-scaler()
+#let rb = (rb0.fit)(rb0, X)
+#show-head("rb scaled", (rb.transform)(rb, X))
+#show-head("rb inverse", (rb.inverse-transform)(rb, (rb.transform)(rb, X)))
+
+== Train / test split
+#let tt = train-test-split(X, y, test-size: 0.4, random-state: 1)
+#show-head("train-x", tt.train-x)
+#show-head("train-y", tt.train-y)
+#show-head("test-x", tt.test-x)
+#show-head("test-y", tt.test-y)
+
+== KFold (3 folds on 6 samples)
+#let folds = k-fold(6, splits: 3, shuffle: true, random-state: 7)
+#show-head("kfold", folds)

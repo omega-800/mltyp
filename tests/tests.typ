@@ -1,4 +1,4 @@
-#import "../src/mltyp.typ": standard-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline
+#import "../src/mltyp.typ": standard-scaler, min-max-scaler, robust-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, train-test-split, k-fold, shuffle-indices, quantile
 
 // exact linear relationship y = 1 + 3*x1 - 2*x2
 #let X = ((1.0, 2.0), (2.0, 3.0), (3.0, 1.0), (4.0, 5.0), (5.0, 4.0), (6.0, 2.0))
@@ -59,5 +59,77 @@
 // 7. Pipeline: scaler + poly (no bias; ridge adds its own) + ridge
 #let pipe = (make-pipeline((standard-scaler(), polynomial-features(degree: 2, include-bias: false), ridge(alpha: 1e-6))).fit)(make-pipeline((standard-scaler(), polynomial-features(degree: 2, include-bias: false), ridge(alpha: 1e-6))), X, y)
 #assert(near((pipe.score)(pipe, X, y), 1.0, eps: 1e-6))
+
+// 8. MinMaxScaler maps to [0,1] and round-trips.
+#let mm0 = min-max-scaler()
+#let mm = (mm0.fit)(mm0, X)
+#let mmX = (mm.transform)(mm, X)
+#for i in range(X.len()) {
+  for j in range(X.at(0).len()) {
+    assert(mmX.at(i).at(j) >= 0.0 and mmX.at(i).at(j) <= 1.0)
+  }
+}
+#let mmback = (mm.inverse-transform)(mm, mmX)
+#for i in range(X.len()) {
+  for j in range(X.at(0).len()) {
+    assert(near(mmback.at(i).at(j), X.at(i).at(j), eps: 1e-9))
+  }
+}
+// feature-range rescale
+#let mm2 = min-max-scaler(feature-range: (-1.0, 1.0))
+#let mm2f = (mm2.fit)(mm2, X)
+#let mm2X = (mm2f.transform)(mm2f, X)
+#for i in range(X.len()) {
+  for j in range(X.at(0).len()) {
+    assert(mm2X.at(i).at(j) >= -1.0 and mm2X.at(i).at(j) <= 1.0)
+  }
+}
+
+// 9. RobustScaler centers on median, scale by IQR, round-trips.
+#let rb0 = robust-scaler()
+#let rb = (rb0.fit)(rb0, X)
+#let rbX = (rb.transform)(rb, X)
+#for j in range(rb.medians.len()) {
+  // transformed column should have median ~ 0
+  let med = quantile(rbX.map(r => r.at(j)), 0.5)
+  assert(near(med, 0.0, eps: 1e-9))
+}
+#let rbback = (rb.inverse-transform)(rb, rbX)
+#for i in range(X.len()) {
+  for j in range(X.at(0).len()) {
+    assert(near(rbback.at(i).at(j), X.at(i).at(j), eps: 1e-9))
+  }
+}
+
+// 10. train-test-split preserves sizes and no leakage.
+#let tt = train-test-split(X, y, test-size: 0.4, shuffle: true, random-state: 3)
+#assert(tt.train-x.len() == 4)
+#assert(tt.test-x.len() == 2)
+#assert(tt.train-y.len() == 4 and tt.test-y.len() == 2)
+
+// 11. k-fold produces `splits` folds; indices cover 0..n-1 exactly once total.
+#let kf = k-fold(6, splits: 3, shuffle: true, random-state: 9)
+#assert(kf.len() == 3)
+#let alltest = ()
+#for fold in kf {
+  assert(fold.train-idx.len() == 4)
+  assert(fold.test-idx.len() == 2)
+  alltest += fold.test-idx
+}
+#assert(alltest.sorted() == range(6))
+// train and test never overlap within a fold
+#for fold in kf {
+  for ti in fold.test-idx {
+    for tr in fold.train-idx {
+      assert(ti != tr)
+    }
+  }
+}
+
+// 12. shuffle is deterministic and a permutation.
+#let sh1 = shuffle-indices(6, 5)
+#let sh2 = shuffle-indices(6, 5)
+#assert(sh1 == sh2)
+#assert(sh1.sorted() == range(6))
 
 = All tests passed
