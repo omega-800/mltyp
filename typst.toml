@@ -1,0 +1,12 @@
+[package]
+name = "mltyp"
+version = "0.1.0"
+authors = [ "Georgiy Shevoroshkin <gshevoroshkin@proton.me>" ]
+license = "Authoritalibre"
+description = "Machine learning library"
+repository = "https://github.com/omega-800/mltyp.git"
+categories = [ "scripting", "utility" ]
+keywords = [ "Machine learning", "ML", "Algorithm", "Linear algebra" ]
+entrypoint = "src/mltyp.typ"
+compiler = "0.15.0"
+exclude = [ "examples", ".github", "docs", "flake.nix", "flake.lock", ".envrc" ]
