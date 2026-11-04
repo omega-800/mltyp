@@ -1,3 +1,4 @@
+#import "deps.typ": *
 // mltyp — a small scikit-learn style machine-learning library written in
 // pure Typst, using only standard library builtins.
 //
@@ -510,52 +511,70 @@
 }
 
 // ----------------------------------------------------------------------------
-// Model selection: deterministic shuffling, train/test split, KFold
+// Model selection: shuffling, train/test split, KFold
+//
+// Randomness is provided by a suiji rng object.
+// Conventions:
+//  * Functions that *require* randomness take the rng as their FIRST
+//    positional argument: shuffle-indices(rng, n), shuffle(rng, a).
+//  * Functions where randomness is *optional* (they have a `shuffle:` flag)
+//    take the rng as a named argument `rng:` instead of positionally.
+//  * Any function that consumes an rng returns it back as the FIRST element
+//    of a tuple: (new-rng, result). Callers thread that rng onward.
 // ----------------------------------------------------------------------------
 
-// Deterministic Fisher-Yates shuffle of the integers 0..n-1 using a seeded
-// linear congruential generator (so results are reproducible).
-#let shuffle-indices(n, seed) = {
-  let idx = range(n)
-  let s = seed
-  for i in range(n - 1) {
-    let k = n - 1 - i
-    s = calc.rem(1664525 * s + 1013904223, 4294967296)
-    let j = calc.rem(s, k + 1)
-    let tmp = idx.at(k)
-    idx = arr-set(idx, k, idx.at(j))
-    idx = arr-set(idx, j, tmp)
-  }
-  idx
+// Shuffle the integers 0..n-1. Returns (new-rng, indices).
+#let shuffle-indices(rng, n) = {
+  let (rng, idx) = suiji.shuffle-f(rng, range(n))
+  (rng, idx)
 }
 
-#let shuffle(a, seed) = {
-  let perm = shuffle-indices(a.len(), seed)
-  perm.map(i => a.at(i))
+// Shuffle an array. Returns (new-rng, shuffled).
+#let shuffle(rng, a) = {
+  let (rng, res) = suiji.shuffle-f(rng, a)
+  (rng, res)
 }
 
 // Split X and y into train and test portions.
-// Returns a dict: (train-x, train-y, test-x, test-y).
-#let train-test-split(X, y, test-size: 0.25, shuffle: true, random-state: 0) = {
+// Returns (new-rng, (train-x, train-y, test-x, test-y)).
+#let train-test-split(X, y, test-size: 0.25, shuffle: true, rng: none) = {
+  let r = rng
+  if shuffle and r == none {
+    r = suiji.gen-rng-f(0)
+  }
   let n = X.len()
-  let idx = if shuffle { shuffle-indices(n, random-state) } else { range(n) }
+  let idx = range(n)
+  if shuffle {
+    (r, idx) = suiji.shuffle-f(r, idx)
+  }
   let ntest = calc.floor(n * test-size)
   let ntrain = n - ntest
   let train-idx = idx.slice(0, ntrain)
   let test-idx = idx.slice(ntrain, n)
   (
-    train-x: train-idx.map(i => X.at(i)),
-    train-y: train-idx.map(i => y.at(i)),
-    test-x: test-idx.map(i => X.at(i)),
-    test-y: test-idx.map(i => y.at(i)),
+    r,
+    (
+      train-x: train-idx.map(i => X.at(i)),
+      train-y: train-idx.map(i => y.at(i)),
+      test-x: test-idx.map(i => X.at(i)),
+      test-y: test-idx.map(i => y.at(i)),
+    ),
   )
 }
 
 // Split n samples into `splits` roughly equal folds (round-robin assignment).
-// Returns an array of `splits` dicts, each with (train-idx, test-idx).
-#let k-fold(n, splits: 5, shuffle: false, random-state: 0) = {
-  let idx = if shuffle { shuffle-indices(n, random-state) } else { range(n) }
-  range(splits).map(f => {
+// Returns (new-rng, folds), where folds is an array of `splits` dicts, each
+// with (train-idx, test-idx).
+#let k-fold(n, splits: 5, shuffle: false, rng: none) = {
+  let r = rng
+  if shuffle and r == none {
+    r = suiji.gen-rng-f(0)
+  }
+  let idx = range(n)
+  if shuffle {
+    (r, idx) = suiji.shuffle-f(r, idx)
+  }
+  let folds = range(splits).map(f => {
     let test-idx = ()
     let train-idx = ()
     for i in range(n) {
@@ -567,4 +586,5 @@
     }
     (train-idx: train-idx, test-idx: test-idx)
   })
+  (r, folds)
 }

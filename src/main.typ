@@ -1,4 +1,5 @@
 #import "mltyp.typ": standard-scaler, min-max-scaler, robust-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, train-test-split, k-fold, r_squared, accuracy-score, mean-squared-error
+#import "deps.typ": *
 
 = mltyp — demo
 
@@ -62,12 +63,12 @@
 #show-head("rb inverse", (rb.inverse-transform)(rb, (rb.transform)(rb, X)))
 
 == Train / test split
-#let tt = train-test-split(X, y, test-size: 0.4, random-state: 1)
+#let (_, tt) = train-test-split(X, y, test-size: 0.4, rng: suiji.gen-rng-f(1))
 #show-head("train-x", tt.train-x)
 #show-head("train-y", tt.train-y)
 #show-head("test-x", tt.test-x)
 #show-head("test-y", tt.test-y)
 
 == KFold (3 folds on 6 samples)
-#let folds = k-fold(6, splits: 3, shuffle: true, random-state: 7)
+#let (_, folds) = k-fold(6, splits: 3, shuffle: true, rng: suiji.gen-rng-f(7))
 #show-head("kfold", folds)

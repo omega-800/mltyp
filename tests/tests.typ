@@ -1,4 +1,5 @@
-#import "../src/mltyp.typ": standard-scaler, min-max-scaler, robust-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, train-test-split, k-fold, shuffle-indices, quantile
+#import "../src/mltyp.typ": standard-scaler, min-max-scaler, robust-scaler, polynomial-features, linear-regression, ridge, lasso, logistic-regression, make-pipeline, train-test-split, k-fold, shuffle, shuffle-indices, quantile
+#import "../src/deps.typ": *
 
 // exact linear relationship y = 1 + 3*x1 - 2*x2
 #let X = ((1.0, 2.0), (2.0, 3.0), (3.0, 1.0), (4.0, 5.0), (5.0, 4.0), (6.0, 2.0))
@@ -102,13 +103,13 @@
 }
 
 // 10. train-test-split preserves sizes and no leakage.
-#let tt = train-test-split(X, y, test-size: 0.4, shuffle: true, random-state: 3)
+#let (_, tt) = train-test-split(X, y, test-size: 0.4, shuffle: true, rng: suiji.gen-rng-f(3))
 #assert(tt.train-x.len() == 4)
 #assert(tt.test-x.len() == 2)
 #assert(tt.train-y.len() == 4 and tt.test-y.len() == 2)
 
 // 11. k-fold produces `splits` folds; indices cover 0..n-1 exactly once total.
-#let kf = k-fold(6, splits: 3, shuffle: true, random-state: 9)
+#let (_, kf) = k-fold(6, splits: 3, shuffle: true, rng: suiji.gen-rng-f(9))
 #assert(kf.len() == 3)
 #let alltest = ()
 #for fold in kf {
@@ -126,10 +127,20 @@
   }
 }
 
-// 12. shuffle is deterministic and a permutation.
-#let sh1 = shuffle-indices(6, 5)
-#let sh2 = shuffle-indices(6, 5)
+// 12. Same seed rng gives same permutation; threading rng gives a new one.
+#let (_, sh1) = shuffle-indices(suiji.gen-rng-f(5), 6)
+#let (_, sh2) = shuffle-indices(suiji.gen-rng-f(5), 6)
 #assert(sh1 == sh2)
 #assert(sh1.sorted() == range(6))
+// shuffling an array of objects
+#let (_, arr) = shuffle(suiji.gen-rng-f(2), (10, 20, 30, 40))
+#assert(arr.sorted() == (10, 20, 30, 40))
+// threading the returned rng should generally change the permutation
+#let (r1, shA) = shuffle-indices(suiji.gen-rng-f(5), 10)
+#let (_, shB) = shuffle-indices(r1, 10)
+#assert(shA != shB)
+// rng is the first element of the return tuple
+#let (_, tt2) = train-test-split(X, y, test-size: 0.5, shuffle: false, rng: none)
+#assert(tt2.train-x.len() == 3 and tt2.test-x.len() == 3)
 
 = All tests passed
