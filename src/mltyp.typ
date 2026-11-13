@@ -5,12 +5,13 @@
 // Conventions:
 //  * A data matrix X is an array of rows, each row an array of numbers.
 //  * A label vector y is an array of numbers.
-//  * Estimators are dictionaries with methods. Because Typst has no
-//    classes, every method takes the estimator itself as its first
-//    argument (`self`) and returns a *new* estimator when it mutates
-//    state. Objects are immutable; fitting returns an updated copy.
-//  * Transformers expose `fit`, `transform`, `fit-transform`.
-//  * Estimators expose `fit`, `predict` (and `score`).
+//  * Estimators are dictionaries. Because Typst has no classes, objects are
+//    immutable and state is captured in closures. A transformer constructor
+//    (e.g. `standard-scaler()`) exposes `fit(x)` returning a fitted object
+//    with `transform`/`inverse-transform`, and `fit-transform(x)` returning
+//    `(fitted, transformed)`. An estimator constructor (e.g. `ridge(...)`)
+//    exposes `fit(x, y)` returning a fitted object with `predict`/`score`.
+//    Fitted methods close over their state, so no `self` is passed.
 
 // ----------------------------------------------------------------------------
 // Low-level vector / matrix helpers
@@ -23,8 +24,6 @@
 #let xpow(b, e) = if e == 0 { 1 } else { calc.pow(b, e) }
 
 #let arr-set(a, i, v) = a.slice(0, i) + (v,) + a.slice(i + 1, a.len())
-
-#let dict-update(d, ..rest) = d + rest.named()
 
 #let vec-dot(a, b) = vec-sum(a.zip(b).map(p => p.at(0) * p.at(1)))
 
@@ -155,28 +154,31 @@
 // StandardScaler
 // ----------------------------------------------------------------------------
 
-#let standard-scaler() = (
-  means: (),
-  stds: (),
-  fit: (self, x) => {
+#let standard-scaler() = {
+  let fit-impl = (x) => {
     let n = x.len()
     let means = col-means(x)
     let stds = range(x.at(0).len()).map(j => {
       let mu = means.at(j)
       calc.sqrt(vec-sum(x.map(row => (row.at(j) - mu) * (row.at(j) - mu))) / n)
     })
-    dict-update(self, means: means, stds: stds)
-  },
-  transform: (self, x) =>
-    x.map(row => row.zip(self.means, self.stds).map(t =>
-      (t.at(0) - t.at(1)) / t.at(2)
-    )),
-  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
-  inverse-transform: (self, x) =>
-    x.map(row => row.zip(self.means, self.stds).map(t =>
-      t.at(0) * t.at(2) + t.at(1)
-    )),
-)
+    (
+      means: means,
+      stds: stds,
+      transform: (v) =>
+        v.map(row => row.zip(means, stds).map(t => (t.at(0) - t.at(1)) / t.at(2))),
+      inverse-transform: (v) =>
+        v.map(row => row.zip(means, stds).map(t => t.at(0) * t.at(2) + t.at(1))),
+    )
+  }
+  (
+    fit: fit-impl,
+    fit-transform: (x) => {
+      let f = fit-impl(x)
+      (f, (f.transform)(x))
+    },
+  )
+}
 
 // ----------------------------------------------------------------------------
 // Quantile / min-max helpers used by the scalers
@@ -206,71 +208,68 @@
 // MinMaxScaler
 // ----------------------------------------------------------------------------
 
-#let min-max-scaler(feature-range: (0.0, 1.0)) = (
-  feature-range: feature-range,
-  mins: (),
-  maxs: (),
-  fit: (self, x) =>
-    dict-update(
-      self,
-      mins: col-extremes(x, calc.min),
-      maxs: col-extremes(x, calc.max),
-    ),
-  transform: (self, x) => {
-    let lo = self.feature-range.at(0)
-    let hi = self.feature-range.at(1)
-    x.map(row =>
-      row.zip(self.mins, self.maxs).map(t =>
-        (t.at(0) - t.at(1)) / (t.at(2) - t.at(1)) * (hi - lo) + lo
-      )
+#let min-max-scaler(feature-range: (0.0, 1.0)) = {
+  let lo = feature-range.at(0)
+  let hi = feature-range.at(1)
+  let fit-impl = (x) => {
+    let mins = col-extremes(x, calc.min)
+    let maxs = col-extremes(x, calc.max)
+    (
+      mins: mins,
+      maxs: maxs,
+      transform: (v) =>
+        v.map(row =>
+          row.zip(mins, maxs).map(t => (t.at(0) - t.at(1)) / (t.at(2) - t.at(1)) * (hi - lo) + lo)
+        ),
+      inverse-transform: (v) =>
+        v.map(row =>
+          row.zip(mins, maxs).map(t => (t.at(0) - lo) / (hi - lo) * (t.at(2) - t.at(1)) + t.at(1))
+        ),
     )
-  },
-  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
-  inverse-transform: (self, x) => {
-    let lo = self.feature-range.at(0)
-    let hi = self.feature-range.at(1)
-    x.map(row =>
-      row.zip(self.mins, self.maxs).map(t =>
-        (t.at(0) - lo) / (hi - lo) * (t.at(2) - t.at(1)) + t.at(1)
-      )
-    )
-  },
-)
+  }
+  (
+    fit: fit-impl,
+    fit-transform: (x) => {
+      let f = fit-impl(x)
+      (f, (f.transform)(x))
+    },
+  )
+}
 
 // ----------------------------------------------------------------------------
 // RobustScaler
 // ----------------------------------------------------------------------------
 
-#let robust-scaler(quantile-range: (0.25, 0.75)) = (
-  quantile-range: quantile-range,
-  medians: (),
-  lower: (),
-  upper: (),
-  fit: (self, x) => {
+#let robust-scaler(quantile-range: (0.25, 0.75)) = {
+  let qlo = quantile-range.at(0)
+  let qhi = quantile-range.at(1)
+  let fit-impl = (x) => {
     let n = x.at(0).len()
-    let qlo = self.quantile-range.at(0)
-    let qhi = self.quantile-range.at(1)
-    dict-update(
-      self,
-      medians: range(n).map(j => quantile(x.map(row => row.at(j)), 0.5)),
-      lower: range(n).map(j => quantile(x.map(row => row.at(j)), qlo)),
-      upper: range(n).map(j => quantile(x.map(row => row.at(j)), qhi)),
+    let medians = range(n).map(j => quantile(x.map(row => row.at(j)), 0.5))
+    let lower = range(n).map(j => quantile(x.map(row => row.at(j)), qlo))
+    let upper = range(n).map(j => quantile(x.map(row => row.at(j)), qhi))
+    (
+      medians: medians,
+      lower: lower,
+      upper: upper,
+      transform: (v) =>
+        v.map(row =>
+          row.zip(medians, lower, upper).map(t => (t.at(0) - t.at(1)) / (t.at(3) - t.at(2)))
+        ),
+      inverse-transform: (v) =>
+        v.map(row =>
+          row.zip(medians, lower, upper).map(t => t.at(0) * (t.at(3) - t.at(2)) + t.at(1))
+        ),
     )
-  },
-  transform: (self, x) =>
-    x.map(row =>
-      row.zip(self.medians, self.lower, self.upper).map(t =>
-        (t.at(0) - t.at(1)) / (t.at(3) - t.at(2))
-      )
-    ),
-  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
-  inverse-transform: (self, x) =>
-    x.map(row =>
-      row.zip(self.medians, self.lower, self.upper).map(t =>
-        t.at(0) * (t.at(3) - t.at(2)) + t.at(1)
-      )
-    ),
-)
+  }
+  (
+    fit: fit-impl,
+    fit-transform: (x) => {
+      let f = fit-impl(x)
+      (f, (f.transform)(x))
+    },
+  )
+}
 
 // ----------------------------------------------------------------------------
 // PolynomialFeatures
@@ -301,30 +300,31 @@
   })
 }
 
-#let polynomial-features(degree: 2, include-bias: true, interaction-only: false) = (
-  degree: degree,
-  include-bias: include-bias,
-  interaction-only: interaction-only,
-  exponents: (),
-  n-features: (),
-  fit: (self, x) =>
-    dict-update(self, 
-      exponents: poly-exponents(
-        x.at(0).len(),
-        self.degree,
-        self.include-bias,
-        self.interaction-only,
-      ),
-      n-features: self.exponents.len(),
-    ),
-  transform: (self, x) =>
-    x.map(row =>
-      self.exponents.map(exp =>
-        exp.enumerate().map(it => xpow(row.at(it.at(0)), it.at(1))).fold(1, (a, b) => a * b)
-      )
-    ),
-  fit-transform: (self, x) => { let f = (self.fit)(self, x); (f.transform)(f, x) },
-)
+#let polynomial-features(degree: 2, include-bias: true, interaction-only: false) = {
+  let fit-impl = (x) => {
+    let exponents = poly-exponents(x.at(0).len(), degree, include-bias, interaction-only)
+    (
+      degree: degree,
+      include-bias: include-bias,
+      interaction-only: interaction-only,
+      exponents: exponents,
+      n-features: exponents.len(),
+      transform: (v) =>
+        v.map(row =>
+          exponents.map(exp =>
+            exp.enumerate().map(it => xpow(row.at(it.at(0)), it.at(1))).fold(1, (a, b) => a * b)
+          )
+        ),
+    )
+  }
+  (
+    fit: fit-impl,
+    fit-transform: (x) => {
+      let f = fit-impl(x)
+      (f, (f.transform)(x))
+    },
+  )
+}
 
 // ----------------------------------------------------------------------------
 // Gradient-descent helpers for linear models
@@ -382,93 +382,83 @@
 // LinearRegression
 // ----------------------------------------------------------------------------
 
-#let linear-regression(alpha: 0.0) = (
-  alpha: alpha,
-  coef: (),
-  fit: (self, x, y) => {
+#let linear-regression(alpha: 0.0) = {
+  let fit-impl = (x, y) => {
     let xa = x.map(row => (1,) + row)
-    dict-update(self, coef: closed-form-ridge(xa, y, self.alpha))
-  },
-  predict: (self, x) => predict-linear(self.coef, x),
-  score: (self, x, y) => {
-    let pred = predict-linear(self.coef, x)
-    r_squared(pred, y)
-  },
-)
+    let w = closed-form-ridge(xa, y, alpha)
+    (
+      alpha: alpha,
+      coef: w,
+      predict: (v) => predict-linear(w, v),
+      score: (v, yv) => r_squared(predict-linear(w, v), yv),
+    )
+  }
+  (fit: fit-impl,)
+}
 
 // ----------------------------------------------------------------------------
 // Ridge (closed form by default, gradient descent optional)
 // ----------------------------------------------------------------------------
 
-#let ridge(alpha: 1.0, solver: "closed-form", lr: 0.1, iters: 200) = (
-  alpha: alpha,
-  lr: lr,
-  iters: iters,
-  solver: solver,
-  coef: (),
-  fit: (self, x, y) => {
+#let ridge(alpha: 1.0, solver: "closed-form", lr: 0.1, iters: 200) = {
+  let fit-impl = (x, y) => {
     let w = {
-      if self.solver == "closed-form" {
+      if solver == "closed-form" {
         let xa = x.map(row => (1,) + row)
-        closed-form-ridge(xa, y, self.alpha)
+        closed-form-ridge(xa, y, alpha)
       } else {
-        fit-linear(x, y, self.alpha, self.lr, self.iters, "ridge")
+        fit-linear(x, y, alpha, lr, iters, "ridge")
       }
     }
-    dict-update(self, coef: w)
-  },
-  predict: (self, x) => predict-linear(self.coef, x),
-  score: (self, x, y) => {
-    let pred = predict-linear(self.coef, x)
-    r_squared(pred, y)
-  },
-)
+    (
+      alpha: alpha,
+      coef: w,
+      predict: (v) => predict-linear(w, v),
+      score: (v, yv) => r_squared(predict-linear(w, v), yv),
+    )
+  }
+  (fit: fit-impl,)
+}
 
 // ----------------------------------------------------------------------------
 // Lasso (coordinate descent via proximal gradient / ISTA)
 // ----------------------------------------------------------------------------
 
-#let lasso(alpha: 1.0, lr: 0.01, iters: 500) = (
-  alpha: alpha,
-  lr: lr,
-  iters: iters,
-  coef: (),
-  fit: (self, x, y) =>
-    dict-update(self, 
-      coef: fit-linear(x, y, self.alpha, self.lr, self.iters, "lasso"),
-    ),
-  predict: (self, x) => predict-linear(self.coef, x),
-  score: (self, x, y) => {
-    let pred = predict-linear(self.coef, x)
-    r_squared(pred, y)
-  },
-)
+#let lasso(alpha: 1.0, lr: 0.01, iters: 500) = {
+  let fit-impl = (x, y) => {
+    let w = fit-linear(x, y, alpha, lr, iters, "lasso")
+    (
+      alpha: alpha,
+      coef: w,
+      predict: (v) => predict-linear(w, v),
+      score: (v, yv) => r_squared(predict-linear(w, v), yv),
+    )
+  }
+  (fit: fit-impl,)
+}
 
 // ----------------------------------------------------------------------------
 // LogisticRegression
 // ----------------------------------------------------------------------------
 
-#let logistic-regression(alpha: 0.0, lr: 0.1, iters: 300) = (
-  alpha: alpha,
-  lr: lr,
-  iters: iters,
-  coef: (),
-  fit: (self, x, y) =>
-    dict-update(self, 
-      coef: fit-linear(x, y, self.alpha, self.lr, self.iters, "logistic"),
-    ),
-  predict-proba: (self, x) => {
-    let Xs = as-matrix(x)
-    let aug = Xs.map(row => (1,) + row)
-    m-vec(aug, self.coef).map(z => sigmoid(z))
-  },
-  predict: (self, x) =>
-    (self.predict-proba)(self, x).map(p => if p >= 0.5 { 1 } else { 0 }),
-  score: (self, x, y) => {
-    let pred = (self.predict)(self, x)
-    accuracy-score(pred, y)
-  },
-)
+#let logistic-regression(alpha: 0.0, lr: 0.1, iters: 300) = {
+  let fit-impl = (x, y) => {
+    let w = fit-linear(x, y, alpha, lr, iters, "logistic")
+    let proba = (v) => {
+      let Xs = as-matrix(v)
+      let aug = Xs.map(row => (1,) + row)
+      m-vec(aug, w).map(z => sigmoid(z))
+    }
+    (
+      alpha: alpha,
+      coef: w,
+      predict-proba: proba,
+      predict: (v) => proba(v).map(p => if p >= 0.5 { 1 } else { 0 }),
+      score: (v, yv) => accuracy-score(proba(v).map(p => if p >= 0.5 { 1 } else { 0 }), yv),
+    )
+  }
+  (fit: fit-impl,)
+}
 
 // ----------------------------------------------------------------------------
 // Pipelines
@@ -476,38 +466,37 @@
 
 #let make-pipeline(steps) = {
   let transforms = steps.slice(0, steps.len() - 1)
-  (
-    steps: steps,
-    fitted-transforms: (),
-    fitted-estimator: none,
-    fit: (self, x, y) => {
-      let xt = x
-      let fitted = ()
-      for t in transforms {
-        let tf = (t.fit)(t, xt)
-        xt = (tf.transform)(tf, xt)
-        fitted += (tf,)
-      }
-      let estimator = steps.at(steps.len() - 1)
-      let fe = (estimator.fit)(estimator, xt, y)
-      dict-update(self, fitted-transforms: fitted, fitted-estimator: fe)
-    },
-    _apply: (self, x) => {
-      let xt = x
-      for t in self.fitted-transforms {
-        xt = (t.transform)(t, xt)
-      }
-      xt
-    },
-    predict: (self, x) => {
-      let xt = (self._apply)(self, x)
-      (self.fitted-estimator.predict)(self.fitted-estimator, xt)
-    },
-    score: (self, x, y) => {
-      let xt = (self._apply)(self, x)
-      (self.fitted-estimator.score)(self.fitted-estimator, xt, y)
-    },
-  )
+  let estimator = steps.at(steps.len() - 1)
+  let fit-impl = (x, y) => {
+    let xt = x
+    let fitted-transforms = ()
+    for t in transforms {
+      let f = (t.fit)(xt)
+      fitted-transforms += (f,)
+      xt = (f.transform)(xt)
+    }
+    let fe = (estimator.fit)(xt, y)
+    (
+      steps: steps,
+      fitted-transforms: fitted-transforms,
+      fitted-estimator: fe,
+      predict: (v) => {
+        let xa = v
+        for tf in fitted-transforms {
+          xa = (tf.transform)(xa)
+        }
+        (fe.predict)(xa)
+      },
+      score: (v, yv) => {
+        let xa = v
+        for tf in fitted-transforms {
+          xa = (tf.transform)(xa)
+        }
+        (fe.score)(xa, yv)
+      },
+    )
+  }
+  (fit: fit-impl,)
 }
 
 // ----------------------------------------------------------------------------
